@@ -22,6 +22,7 @@ export default function SummarizePage() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [loading, setLoading] = useState(false);
+  const [engine, setEngine] = useState<"openai" | "huggingface">("openai"); // toggle state
 
   useEffect(() => {
     const stored = localStorage.getItem("selectedArticles");
@@ -33,24 +34,36 @@ export default function SummarizePage() {
   const summarize = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/summarize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ articles }),
-      });
+      const res = await fetch(
+        engine === "openai" ? "/api/summarize" : "/api/hf-summarize",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ articles }),
+        }
+      );
       const data = await res.json();
 
-      // Assume summaries come back in Markdown paragraphs → split by numbers
-      const parsed = data.summaries
-        .split(/\d+\./)
-        .filter((s: string) => s.trim().length > 0)
-        .map((s: string, i: number) => ({
+      if (engine === "openai") {
+        // OpenAI returns a single string -> split into summaries
+        const parsed = data.summaries
+          .split(/\d+\./)
+          .filter((s: string) => s.trim().length > 0)
+          .map((s: string, i: number) => ({
+            title: articles[i]?.title || `Article ${i + 1}`,
+            source: articles[i]?.source?.name || "Unknown",
+            summary: s.trim(),
+          }));
+        setSummaries(parsed);
+      } else {
+        // Hugging Face returns array of summaries
+        const parsed = data.summaries.map((s: string, i: number) => ({
           title: articles[i]?.title || `Article ${i + 1}`,
           source: articles[i]?.source?.name || "Unknown",
-          summary: s.trim(),
+          summary: s,
         }));
-
-      setSummaries(parsed);
+        setSummaries(parsed);
+      }
     } catch (error) {
       console.error(error);
     } finally {
@@ -82,14 +95,34 @@ export default function SummarizePage() {
   };
 
   const rejectSummary = (summary: Summary) => {
-    setSummaries((prev) =>
-      prev.filter((s) => s.title !== summary.title)
-    );
+    setSummaries((prev) => prev.filter((s) => s.title !== summary.title));
   };
 
   return (
     <main className="max-w-4xl mx-auto p-6">
       <h1 className="text-3xl font-bold mb-6">📝 Review & Approve Summaries</h1>
+
+      {/* Engine selector */}
+      {summaries.length === 0 && (
+        <div className="mb-6 flex gap-6">
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={engine === "openai"}
+              onChange={() => setEngine("openai")}
+            />
+            OpenAI
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={engine === "huggingface"}
+              onChange={() => setEngine("huggingface")}
+            />
+            Hugging Face
+          </label>
+        </div>
+      )}
 
       {/* Show selected articles before summarizing */}
       {summaries.length === 0 && (
@@ -111,7 +144,9 @@ export default function SummarizePage() {
             disabled={loading}
             className="bg-green-600 text-white px-4 py-2 rounded"
           >
-            {loading ? "Summarizing..." : "Generate Summaries"}
+            {loading
+              ? `Summarizing with ${engine}...`
+              : `Generate Summaries with ${engine}`}
           </button>
         </div>
       )}
