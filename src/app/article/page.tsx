@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import { 
   FileText, 
   Copy, 
@@ -12,22 +12,39 @@ import {
   BookOpen,
   Star,
   Image as ImageIcon,
-  ExternalLink 
+  ExternalLink,
+  Edit2,
+  Save
 } from "lucide-react"
+import Quill from 'quill'
+import 'quill/dist/quill.snow.css'
 
 export default function ArticleGenerator() {
   const [formData, setFormData] = useState({
+    id: "",
     title: "",
     description: "",
     keywords: "",
     contentType: "article",
     difficultyLevel: "beginner",
     featured: false,
-    generateImage: false
+    generateImage: false,
+    customImageUrl: "",
+    content: "",
+    excerpt: "",
+    metaTitle: "",
+    metaDescription: "",
+    status: "published"
   })
   
   const [loading, setLoading] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const quillRef = useRef<HTMLDivElement>(null)
+  const quillInstance = useRef<Quill | null>(null)
+
   type Article = {
+    keywords: any
+    description: string
     id: string
     title: string
     slug: string
@@ -41,6 +58,10 @@ export default function ArticleGenerator() {
     imageUrl?: string
     contentType: string
     createdAt: string
+    updatedAt?: string
+    metaTitle: string
+    metaDescription: string
+    status: string
   }
 
   const [article, setArticle] = useState<Article | null>(null)
@@ -62,7 +83,49 @@ export default function ArticleGenerator() {
     { value: "advanced", label: "Advanced", color: "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-300" }
   ]
 
-  async function generateArticle() {
+  const statusOptions = [
+    { value: "published", label: "Published" },
+    { value: "draft", label: "Draft" },
+    { value: "archived", label: "Archived" }
+  ]
+
+  // Initialize Quill editor
+  useEffect(() => {
+    if (quillRef.current && !quillInstance.current) {
+      quillInstance.current = new Quill(quillRef.current, {
+        theme: 'snow',
+        modules: {
+          toolbar: [
+            [{ 'header': [1, 2, 3, false] }],
+            ['bold', 'italic', 'underline'],
+            [{'list': 'ordered'}, {'list': 'bullet'}],
+            ['link', 'image'],
+            ['clean']
+          ]
+        }
+      })
+
+      quillInstance.current.on('text-change', () => {
+        const content = quillInstance.current?.root.innerHTML || ''
+        setFormData(prev => ({ ...prev, content }))
+      })
+    }
+
+    return () => {
+      if (quillInstance.current) {
+        quillInstance.current = null
+      }
+    }
+  }, [])
+
+  // Update Quill content when article changes
+  useEffect(() => {
+    if (article && quillInstance.current && isEditing) {
+      quillInstance.current.root.innerHTML = article.content
+    }
+  }, [article, isEditing])
+
+  async function generateOrUpdateArticle() {
     if (!formData.title.trim()) {
       setError("Please enter an article title")
       return
@@ -74,31 +137,47 @@ export default function ArticleGenerator() {
     }
 
     setLoading(true)
-    setArticle(null)
     setError("")
     setCopied(false)
-    
+
     try {
+      const payload = {
+        ...formData,
+        keywords: formData.keywords.split(",").map((k) => k.trim()).filter(Boolean),
+        content: isEditing ? formData.content : undefined,
+        excerpt: formData.excerpt || undefined,
+        metaTitle: formData.metaTitle || undefined,
+        metaDescription: formData.metaDescription || undefined,
+        customImageUrl: formData.customImageUrl || undefined,
+      }
+
       const res = await fetch("/api/article", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...formData,
-          keywords: formData.keywords.split(",").map((k) => k.trim()).filter(Boolean),
-        }),
+        body: JSON.stringify(payload),
       })
 
       const data = await res.json()
       
       if (!res.ok) {
-        throw new Error(data.error || "Failed to generate article")
+        throw new Error(data.error || "Failed to process article")
       }
 
       setArticle(data.article)
       setActiveTab("content")
+      setIsEditing(false)
+      setFormData(prev => ({
+        ...prev,
+        id: data.article.id,
+        content: data.article.content,
+        excerpt: data.article.excerpt,
+        metaTitle: data.article.metaTitle,
+        metaDescription: data.article.metaDescription,
+        status: data.article.status
+      }))
     } catch (error) {
       console.error(error)
-      setError(error instanceof Error ? error.message : "Failed to generate article")
+      setError(error instanceof Error ? error.message : "Failed to process article")
     } finally {
       setLoading(false)
     }
@@ -122,7 +201,6 @@ export default function ArticleGenerator() {
     let extension = 'html'
     
     if (format === 'md') {
-      // Simple HTML to Markdown conversion
       content = content
         .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
         .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
@@ -150,6 +228,28 @@ export default function ArticleGenerator() {
     setError("")
   }
 
+  const startEditing = () => {
+    if (article) {
+      setFormData({
+        id: article.id,
+        title: article.title,
+        description: article.description,
+        keywords: article.keywords?.join(", ") || "",
+        contentType: article.contentType,
+        difficultyLevel: article.difficultyLevel,
+        featured: article.featured,
+        generateImage: false,
+        customImageUrl: article.imageUrl || "",
+        content: article.content,
+        excerpt: article.excerpt,
+        metaTitle: article.metaTitle,
+        metaDescription: article.metaDescription,
+        status: article.status
+      })
+      setIsEditing(true)
+    }
+  }
+
   return (
     <div className="min-h-[100svh] bg-gradient-to-b from-slate-50 via-white to-purple-50 dark:from-slate-900 dark:via-slate-950 dark:to-purple-950">
       <main className="mx-auto flex min-h-[100svh] max-w-6xl items-center justify-center p-4 md:p-6">
@@ -164,7 +264,7 @@ export default function ArticleGenerator() {
                 AI Article Generator
               </h1>
               <p className="mt-1 text-pretty text-sm text-slate-600 dark:text-slate-400 md:text-base">
-                Generate comprehensive, SEO-optimized articles with metadata, excerpts, and structured content.
+                Generate and edit comprehensive, SEO-optimized articles with rich text editing and full field control.
               </p>
             </div>
           </header>
@@ -182,7 +282,7 @@ export default function ArticleGenerator() {
             className="space-y-6"
             onSubmit={(e) => {
               e.preventDefault()
-              if (!loading) generateArticle()
+              if (!loading) generateOrUpdateArticle()
             }}
           >
             {/* Title & Description */}
@@ -285,6 +385,94 @@ export default function ArticleGenerator() {
               </div>
             </div>
 
+            {/* Status & Options */}
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                  Status
+                </label>
+                <select
+                  value={formData.status}
+                  onChange={(e) => handleInputChange('status', e.target.value)}
+                  className="h-12 w-full rounded-lg border border-slate-300 bg-white/90 px-4 text-base text-slate-900 outline-none transition focus:border-purple-500 focus:ring-4 focus:ring-purple-200/60 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-500/20"
+                >
+                  {statusOptions.map((status) => (
+                    <option key={status.value} value={status.value}>
+                      {status.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="customImageUrl" className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                  Custom Image URL (optional)
+                </label>
+                <input
+                  id="customImageUrl"
+                  type="text"
+                  placeholder="e.g., https://example.com/image.jpg"
+                  value={formData.customImageUrl}
+                  onChange={(e) => handleInputChange('customImageUrl', e.target.value)}
+                  className="h-12 w-full rounded-lg border border-slate-300 bg-white/90 px-4 text-base text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-purple-500 focus:ring-4 focus:ring-purple-200/60 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-500/20"
+                />
+              </div>
+            </div>
+
+            {/* Additional Fields for Editing */}
+            {isEditing && (
+              <>
+                <div className="space-y-2">
+                  <label htmlFor="metaTitle" className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                    Meta Title
+                  </label>
+                  <input
+                    id="metaTitle"
+                    type="text"
+                    placeholder="SEO-optimized meta title"
+                    value={formData.metaTitle}
+                    onChange={(e) => handleInputChange('metaTitle', e.target.value)}
+                    className="h-12 w-full rounded-lg border border-slate-300 bg-white/90 px-4 text-base text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-purple-500 focus:ring-4 focus:ring-purple-200/60 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-500/20"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label htmlFor="excerpt" className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                    Excerpt
+                  </label>
+                  <textarea
+                    id="excerpt"
+                    rows={3}
+                    placeholder="Brief article summary for SEO"
+                    value={formData.excerpt}
+                    onChange={(e) => handleInputChange('excerpt', e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white/90 px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-purple-500 focus:ring-4 focus:ring-purple-200/60 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-500/20"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label htmlFor="metaDescription" className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                    Meta Description
+                  </label>
+                  <textarea
+                    id="metaDescription"
+                    rows={3}
+                    placeholder="SEO-optimized meta description (max 160 characters)"
+                    value={formData.metaDescription}
+                    onChange={(e) => handleInputChange('metaDescription', e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white/90 px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-purple-500 focus:ring-4 focus:ring-purple-200/60 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-500/20"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                    Content
+                  </label>
+                  <div ref={quillRef} className="h-[400px] bg-white dark:bg-slate-900" />
+                </div>
+              </>
+            )}
+
             {/* Options */}
             <div className="flex flex-wrap gap-4">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -311,7 +499,17 @@ export default function ArticleGenerator() {
             </div>
 
             {/* Submit Button */}
-            <div className="flex items-center justify-end">
+            <div className="flex items-center justify-end gap-2">
+              {article && !isEditing && (
+                <button
+                  type="button"
+                  onClick={startEditing}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-slate-600 px-6 text-sm font-medium text-white shadow-sm transition active:translate-y-px hover:bg-slate-700 dark:bg-slate-500 dark:hover:bg-slate-600"
+                >
+                  <Edit2 className="h-4 w-4" />
+                  Edit Article
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={loading || !formData.title.trim() || !formData.description.trim()}
@@ -320,12 +518,12 @@ export default function ArticleGenerator() {
                 {loading ? (
                   <>
                     <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/80 border-b-transparent" />
-                    Generating Article...
+                    {isEditing ? 'Updating Article...' : 'Generating Article...'}
                   </>
                 ) : (
                   <>
-                    <FileText className="h-4 w-4" />
-                    Generate Article
+                    {isEditing ? <Save className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
+                    {isEditing ? 'Save Changes' : 'Generate Article'}
                   </>
                 )}
               </button>
@@ -333,7 +531,7 @@ export default function ArticleGenerator() {
           </form>
 
           {/* Results */}
-          {article && (
+          {article && !isEditing && (
             <div className="mt-8 rounded-xl border border-slate-200 bg-white/70 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
               {/* Article Header */}
               <div className="border-b border-slate-200 p-4 dark:border-slate-800">
@@ -463,20 +661,42 @@ export default function ArticleGenerator() {
                     </div>
 
                     <div>
+                      <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Meta Title</label>
+                      <div className="mt-1">
+                        <input
+                          value={article.metaTitle}
+                          readOnly
+                          className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                        />
+                        <div className="mt-1 flex items-center justify-between">
+                          <span className="text-xs text-slate-500">
+                            {article.metaTitle?.length || 0}/60 characters
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(article.metaTitle)}
+                            className="text-xs text-purple-600 hover:text-purple-700 dark:text-purple-400"
+                          >
+                            Copy Meta Title
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
                       <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Meta Description</label>
                       <div className="mt-1">
                         <textarea
-                          value={article.excerpt}
+                          value={article.metaDescription}
                           readOnly
                           rows={3}
                           className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
                         />
                         <div className="mt-1 flex items-center justify-between">
                           <span className="text-xs text-slate-500">
-                            {article.excerpt?.length || 0}/160 characters
+                            {article.metaDescription?.length || 0}/160 characters
                           </span>
                           <button
-                            onClick={() => copyToClipboard(article.excerpt)}
+                            onClick={() => copyToClipboard(article.metaDescription)}
                             className="text-xs text-purple-600 hover:text-purple-700 dark:text-purple-400"
                           >
                             Copy Meta Description
@@ -546,6 +766,17 @@ export default function ArticleGenerator() {
                           </span>
                         </div>
                       </div>
+
+                      {article.updatedAt && (
+                        <div>
+                          <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Updated</label>
+                          <div className="mt-1">
+                            <span className="text-sm text-slate-600 dark:text-slate-400">
+                              {new Date(article.updatedAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="rounded-lg bg-slate-50 p-4 dark:bg-slate-800/50">
@@ -563,15 +794,18 @@ export default function ArticleGenerator() {
                           <span className="text-slate-600 dark:text-slate-400">Article ID:</span>
                           <span className="font-mono text-xs text-slate-600 dark:text-slate-400">{article.id}</span>
                         </div>
-                        {article.featured && (
-                          <div className="flex justify-between">
-                            <span className="text-slate-600 dark:text-slate-400">Status:</span>
-                            <span className="flex items-center gap-1 font-medium text-yellow-600">
-                              <Star className="h-3 w-3 fill-current" />
-                              Featured Article
-                            </span>
-                          </div>
-                        )}
+                        <div className="flex justify-between">
+                          <span className="text-slate-600 dark:text-slate-400">Status:</span>
+                          <span className="font-medium text-slate-900 dark:text-slate-100">
+                            {statusOptions.find(s => s.value === article.status)?.label}
+                            {article.featured && (
+                              <span className="ml-2 flex items-center gap-1 text-yellow-600">
+                                <Star className="h-3 w-3 fill-current" />
+                                Featured
+                              </span>
+                            )}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>

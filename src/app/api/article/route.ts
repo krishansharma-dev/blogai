@@ -15,19 +15,16 @@ function generateSlug(title: string) {
 }
 
 function calculateReadTime(wordCount: number) {
-  // Average reading speed: 200-250 words per minute
   return Math.ceil(wordCount / 225);
 }
 
 function extractMetaFromContent(content: string) {
-  // Extract first paragraph for excerpt
   const textContent = content.replace(/<[^>]*>/g, '');
   const firstParagraph = textContent.split('\n\n')[0] || textContent.substring(0, 300);
   const excerpt = firstParagraph.length > 300 
     ? firstParagraph.substring(0, 297) + '...' 
     : firstParagraph;
 
-  // Generate meta description from excerpt
   const metaDescription = excerpt.length > 160 
     ? excerpt.substring(0, 157) + '...' 
     : excerpt;
@@ -35,16 +32,40 @@ function extractMetaFromContent(content: string) {
   return { excerpt, metaDescription };
 }
 
-export async function POST(req: { json: () => PromiseLike<{ title: any; description: any; keywords: any; contentType?: "article" | "tutorial" | "news" | "video" | "podcast" | undefined; difficultyLevel?: "beginner" | "intermediate" | "advanced" | undefined; featured?: false | undefined; generateImage?: false | undefined; }> | { title: any; description: any; keywords: any; contentType?: "article" | "tutorial" | "news" | "video" | "podcast" | undefined; difficultyLevel?: "beginner" | "intermediate" | "advanced" | undefined; featured?: false | undefined; generateImage?: false | undefined; }; }) {
+export async function POST(req: { 
+  json: () => PromiseLike<{
+    id?: string;
+    title: any;
+    description: any;
+    keywords: any;
+    contentType?: "article" | "tutorial" | "news" | "video" | "podcast" | undefined;
+    difficultyLevel?: "beginner" | "intermediate" | "advanced" | undefined;
+    featured?: boolean | undefined;
+    generateImage?: boolean | undefined;
+    customImageUrl?: string | undefined;
+    content?: string | undefined;
+    excerpt?: string | undefined;
+    metaTitle?: string | undefined;
+    metaDescription?: string | undefined;
+    status?: string | undefined;
+  }>
+}) {
   try {
-    const { 
-      title, 
-      description, 
-      keywords, 
+    const {
+      id, // Added for update operations
+      title,
+      description,
+      keywords,
       contentType = 'article',
       difficultyLevel = 'beginner',
       featured = false,
-      generateImage = false 
+      generateImage = false,
+      customImageUrl,
+      content: providedContent,
+      excerpt: providedExcerpt,
+      metaTitle: providedMetaTitle,
+      metaDescription: providedMetaDescription,
+      status = 'published'
     } = await req.json();
 
     // Input validation
@@ -62,98 +83,112 @@ export async function POST(req: { json: () => PromiseLike<{ title: any; descript
       );
     }
 
-    // Generate slug and check for uniqueness
+    // Generate or validate slug
     let slug = generateSlug(title);
     const { data: existingArticle } = await supabase
       .from("articles")
       .select("slug")
       .eq("slug", slug)
+      .neq("id", id || '') // Exclude current article if updating
       .single();
 
     if (existingArticle) {
       slug = `${slug}-${Date.now()}`;
     }
 
-    // Create enhanced prompt based on content type
-    const contentTypePrompts = {
-      article: "Write a comprehensive, well-researched article",
-      tutorial: "Write a step-by-step tutorial with clear instructions and examples",
-      news: "Write a news article with facts, quotes, and current relevance",
-      video: "Write a detailed video script with timestamps and visual cues",
-      podcast: "Write a podcast episode script with engaging dialogue and segments"
-    };
+    let content = providedContent;
+    let excerpt = providedExcerpt;
+    let metaDescription = providedMetaDescription;
+    let metaTitle = providedMetaTitle || title;
+    let wordCount = 0;
+    let readTime = 0;
+    let imageUrl = customImageUrl || null;
 
-    const difficultyPrompts = {
-      beginner: "suitable for beginners with no prior knowledge",
-      intermediate: "for readers with some background knowledge",
-      advanced: "for expert-level audience with deep technical knowledge"
-    };
-
-    const prompt = `
-    ${contentTypePrompts[contentType] || contentTypePrompts.article} about "${title}".
-    
-    Description: ${description}
-    ${keywords ? `Keywords to include: ${Array.isArray(keywords) ? keywords.join(', ') : keywords}` : ''}
-    
-    Requirements:
-    - Target audience: ${difficultyPrompts[difficultyLevel]}
-    - Content type: ${contentType}
-    - Use clear H1, H2, and H3 headings with proper hierarchy
-    - Include an engaging introduction that hooks the reader
-    - Provide detailed, actionable content with examples
-    - Add relevant bullet points and numbered lists where appropriate
-    - Include a strong conclusion with key takeaways
-    - Aim for 1500-2500 words for comprehensive coverage
-    - Write in a professional yet engaging tone
-    - Optimize for SEO with natural keyword integration
-    - Include relevant examples, case studies, or practical applications
-    
-    ${contentType === 'tutorial' ? `
-    Additional Tutorial Requirements:
-    - Number each main step clearly
-    - Include prerequisites section
-    - Add troubleshooting tips
-    - Provide expected outcomes for each step
-    ` : ''}
-    
-    ${contentType === 'news' ? `
-    Additional News Requirements:
-    - Start with the most important information (inverted pyramid)
-    - Include relevant background context
-    - Use present tense for recent events
-    - Maintain journalistic objectivity
-    ` : ''}
-    
-    Format the response in clean HTML with proper heading tags (h1, h2, h3), paragraphs (p), lists (ul, ol), and emphasis tags (strong, em) where appropriate.
-    `;
-
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
-      max_tokens: 3000,
-    });
-
-    const content = completion.choices[0].message?.content ?? "";
-
+    // Generate content if not provided (for new articles or when content isn't edited)
     if (!content) {
-      throw new Error("No content generated from OpenAI");
+      const contentTypePrompts = {
+        article: "Write a comprehensive, well-researched article",
+        tutorial: "Write a step-by-step tutorial with clear instructions and examples",
+        news: "Write a news article with facts, quotes, and current relevance",
+        video: "Write a detailed video script with timestamps and visual cues",
+        podcast: "Write a podcast episode script with engaging dialogue and segments"
+      };
+
+      const difficultyPrompts = {
+        beginner: "suitable for beginners with no prior knowledge",
+        intermediate: "for readers with some background knowledge",
+        advanced: "for expert-level audience with deep technical knowledge"
+      };
+
+      const prompt = `
+      ${contentTypePrompts[contentType] || contentTypePrompts.article} about "${title}".
+      
+      Description: ${description}
+      ${keywords ? `Keywords to include: ${Array.isArray(keywords) ? keywords.join(', ') : keywords}` : ''}
+      
+      Requirements:
+      - Target audience: ${difficultyPrompts[difficultyLevel]}
+      - Content type: ${contentType}
+      - Use clean HTML formatting compatible with rich text editors
+      - Use semantic HTML with proper hierarchy (h1, h2, h3)
+      - Include an engaging introduction that hooks the reader
+      - Provide detailed, actionable content with examples
+      - Add relevant bullet points and numbered lists
+      - Include a strong conclusion with key takeaways
+      - Aim for 1500-2500 words
+      - Write in a professional yet engaging tone
+      - Optimize for SEO with natural keyword integration
+      - Include relevant examples, case studies, or practical applications
+      - Ensure content is compatible with rich text editors like Quill or CKEditor
+      
+      ${contentType === 'tutorial' ? `
+      Additional Tutorial Requirements:
+      - Number each main step clearly
+      - Include prerequisites section
+      - Add troubleshooting tips
+      - Provide expected outcomes for each step
+      ` : ''}
+      
+      ${contentType === 'news' ? `
+      Additional News Requirements:
+      - Start with the most important information (inverted pyramid)
+      - Include relevant background context
+      - Use present tense for recent events
+      - Maintain journalistic objectivity
+      ` : ''}
+      
+      Format the response in clean HTML with semantic tags (h1, h2, h3, p, ul, ol, strong, em) suitable for rich text editor integration.
+      `;
+
+      const completion = await client.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens: 3000,
+      });
+
+      content = completion.choices[0].message?.content ?? "";
+      if (!content) {
+        throw new Error("No content generated from OpenAI");
+      }
     }
 
     // Calculate content metrics
-    const wordCount = content.replace(/<[^>]*>/g, '').split(/\s+/).length;
-    const readTime = calculateReadTime(wordCount);
-    const { excerpt, metaDescription } = extractMetaFromContent(content);
+    wordCount = content.replace(/<[^>]*>/g, '').split(/\s+/).length;
+    readTime = calculateReadTime(wordCount);
+    
+    // Use provided excerpt and metaDescription or generate them
+    if (!excerpt || !metaDescription) {
+      const meta = extractMetaFromContent(content);
+      excerpt = providedExcerpt || meta.excerpt;
+      metaDescription = providedMetaDescription || meta.metaDescription;
+    }
 
-    // Generate meta title (optimize for SEO)
-    const metaTitle = title.length > 60 ? title.substring(0, 57) + '...' : title;
+    // Optimize meta title for SEO
+    metaTitle = metaTitle.length > 60 ? metaTitle.substring(0, 57) + '...' : metaTitle;
 
-    // Create URL (you might want to use your actual domain)
-    const url = `https://yourdomain.com/articles/${slug}`;
-
-    // Optional: Generate image using DALL-E (if requested)
-    let imageUrl = null;
-    if (generateImage) {
+    // Generate image if requested and no custom URL provided
+    if (generateImage && !customImageUrl) {
       try {
         const imagePrompt = `Create a professional, clean illustration for an article titled "${title}". Style: modern, minimalist, suitable for a blog header.`;
         const imageResponse = await client.images.generate({
@@ -166,14 +201,13 @@ export async function POST(req: { json: () => PromiseLike<{ title: any; descript
         imageUrl = imageResponse.data?.[0]?.url || null;
       } catch (imageError) {
         console.warn("Failed to generate image:", imageError);
-        // Continue without image
       }
     }
 
-    // Save to Supabase
+    // Prepare article data
     const articleData = {
       title: title.trim(),
-      url,
+      url: `https://yourdomain.com/articles/${slug}`,
       description: description.trim(),
       content,
       excerpt,
@@ -185,18 +219,31 @@ export async function POST(req: { json: () => PromiseLike<{ title: any; descript
       slug,
       meta_title: metaTitle,
       meta_description: metaDescription,
-      status: 'published',
+      status,
       featured,
       trending: false,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      ...(id ? {} : { created_at: new Date().toISOString() }) // Only set created_at for new articles
     };
 
-    const { data, error } = await supabase
-      .from("articles")
-      .insert([articleData])
-      .select("*")
-      .single();
+    let data;
+    let error;
+
+    // Update or insert based on whether ID is provided
+    if (id) {
+      ({ data, error } = await supabase
+        .from("articles")
+        .update(articleData)
+        .eq("id", id)
+        .select("*")
+        .single());
+    } else {
+      ({ data, error } = await supabase
+        .from("articles")
+        .insert([articleData])
+        .select("*")
+        .single());
+    }
 
     if (error) {
       console.error("Supabase error:", error);
@@ -218,7 +265,11 @@ export async function POST(req: { json: () => PromiseLike<{ title: any; descript
         difficultyLevel: data.difficulty_level,
         imageUrl: data.image_url,
         featured: data.featured,
-        createdAt: data.created_at
+        createdAt: data.created_at,
+        updatedAt: data.updated_at,
+        metaTitle: data.meta_title,
+        metaDescription: data.meta_description,
+        status: data.status
       }
     });
 

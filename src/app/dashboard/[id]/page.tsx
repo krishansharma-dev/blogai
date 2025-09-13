@@ -112,7 +112,7 @@ export default function ArticleDetailPage() {
 
         <CardHeader>
           <CardTitle className="text-3xl font-bold">{article.title}</CardTitle>
-          <p className="text-muted-foreground">{article.description}</p>
+          {/* <p className="text-muted-foreground">{article.description}</p> */}
         </CardHeader>
 
         <CardContent className="space-y-4">
